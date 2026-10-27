@@ -1,14 +1,26 @@
 [project]
 name = "findex"
-version = "0.1.0"
+version = "0.4.0"
 description = "A full-text search engine over your own corpus (Python course project)"
 readme = "README.md"
 authors = [{ name = "Valeria Soina" }]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "typer>=0.12",
+    "rich>=13",
+]
 
 [dependency-groups]
-dev = ["ruff>=0.6", "pytest>=8"]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8",
+    "pytest-cov>=5",
+    "hypothesis>=6.100",
+    "pyright>=1.1.380",
+]
+
+[project.scripts]
+findex = "findex.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.8,<0.12"]
@@ -20,3 +32,23 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["slow: takes more than a second (deselect with -m 'not slow')"]
+
+[tool.coverage.run]
+source = ["findex"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

@@ -12,16 +12,26 @@ from __future__ import annotations
 
 import json
 import pickle
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TypedDict, cast
 
 from findex.decorators import timed
 from findex.index import Index
 from findex.models import DocMeta, Posting
 
 FORMAT_VERSION = 1
+
+
+class IndexJson(TypedDict):
+    """Shape of the JSON index file (JSON object keys are always strings)."""
+
+    version: int
+    has_positions: bool
+    doc_lengths: dict[str, int]
+    doc_meta: dict[str, tuple[str, str]]
+    postings: dict[str, list[tuple[int, int, list[int]]]]
 
 
 class IndexFormatError(ValueError):
@@ -56,7 +66,7 @@ def load(path: Path) -> Index:
 
 
 @contextmanager
-def open_index(path: Path) -> Iterator[Index]:
+def open_index(path: Path) -> Generator[Index]:
     """``with open_index(p) as ix: ...`` -- the index is released even if the body raises.
 
     Everything before ``yield`` is ``__enter__``, everything in ``finally`` is ``__exit__``.
@@ -69,15 +79,15 @@ def open_index(path: Path) -> Iterator[Index]:
 
 
 def _save_json(index: Index, path: Path) -> None:
-    data: dict[str, Any] = {
+    data: IndexJson = {
         "version": FORMAT_VERSION,
         "has_positions": index.has_positions,
-        "doc_lengths": {d: index.doc_length(d) for d in index.all_doc_ids},
+        "doc_lengths": {str(d): index.doc_length(d) for d in index.all_doc_ids},
         "doc_meta": {
-            d: [index.doc_meta(d).path, index.doc_meta(d).title] for d in index.all_doc_ids
+            str(d): (index.doc_meta(d).path, index.doc_meta(d).title) for d in index.all_doc_ids
         },
         "postings": {
-            term: [[p.doc_id, p.tf, list(p.positions)] for p in plist]
+            term: [(p.doc_id, p.tf, list(p.positions)) for p in plist]
             for term, plist in index.items()
         },
     }
@@ -88,11 +98,13 @@ def _save_json(index: Index, path: Path) -> None:
 def _load_json(path: Path) -> Index:
     try:
         with path.open(encoding="utf-8") as f:
-            data = json.load(f)
+            raw: object = json.load(f)
     except json.JSONDecodeError as exc:
         raise IndexFormatError(f"{path} is not valid JSON: {exc}") from exc
-    if not isinstance(data, dict) or data.get("version") != FORMAT_VERSION:  # pyright: ignore[reportUnknownMemberType]
+    if not isinstance(raw, dict) or cast(dict[str, object], raw).get("version") != FORMAT_VERSION:
         raise IndexFormatError(f"unsupported index format in {path}")
+    # json.load returns untyped data; after the version check we trust our own file format.
+    data = cast(IndexJson, raw)
     return Index(
         postings={
             term: [Posting(d, tf, tuple(pos)) for d, tf, pos in plist]

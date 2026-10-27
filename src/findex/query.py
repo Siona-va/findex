@@ -254,8 +254,8 @@ def parse(query: str) -> Node:
     """
     parser = _Parser(_lex(query))
     node = parser.or_expr()
-    if parser.peek() is not None:
-        raise QuerySyntaxError(f"unexpected {parser.peek()[1]!r}")  # type: ignore[index]
+    if (leftover := parser.peek()) is not None:
+        raise QuerySyntaxError(f"unexpected {leftover[1]!r}")
     if node is None:
         raise QuerySyntaxError("empty query")
     return node

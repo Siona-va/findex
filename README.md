@@ -1,5 +1,7 @@
 # findex — пошукова система по власному корпусу
 
+[![CI](https://github.com/USERNAME/findex/actions/workflows/ci.yml/badge.svg)](https://github.com/USERNAME/findex/actions/workflows/ci.yml)
+
 Семестровий проєкт курсу «Python програмування»: повнотекстовий пошук, що росте від
 генераторного конвеєра (Лаб 1) до пакованого CLI з тестами (Лаб 4) і далі.
 
@@ -22,9 +24,16 @@
 ## Встановлення
 
 ```bash
-uv sync
-uv run python -m findex.stats data/pydocs
+uv tool install .                 # з репозиторію: команда findex з'являється в PATH
+# або з релізу:
+uv tool install https://github.com/USERNAME/findex/releases/download/v0.4.0/findex-0.4.0-py3-none-any.whl
+
+findex index data/pydocs --out index.pkl --positions
+findex search index.pkl 'asyncio "event loop" NOT thread' -k 5
+findex stats index.pkl
 ```
+
+Розробка: `uv sync` → `uv run pytest`, `uv run ruff check .`, `uv run pyright`.
 
 ---
 
@@ -266,3 +275,55 @@ BM25 трохи кращий (особливо там, де релевантні
 з 1–2 релевантними файлами (`dataclass frozen`, `regular expression`) P@5 обмежений зверху
 0,2–0,4 самою кількістю релевантних документів — вибірка маленька й шумна, але звичка
 вимірювати ранжування важливіша за саме число.
+
+---
+
+## Лаб 4 — Типи, тести, пакування, CLI
+
+### Що зроблено
+
+- **Типи, pyright strict — 0 помилок.** Усі публічні функції анотовані; генератори повертають
+  `Iterator[...]`, приймають `Iterable[...]`; `Literal["bm25", "tfidf"]` і `Literal["merge", "set"]`
+  для імен; `type DocIds = list[int]` (PEP 695); `@timed` типізовано через `ParamSpec`
+  (`def timed[**P, R](fn: Callable[P, R]) -> Callable[P, R]`); `Scorer` — `typing.Protocol`;
+  форма JSON-файлу — `TypedDict`. Єдиний `# type: ignore` — `__hash__ = None` в `Index`
+  (свідомо робимо змінюваний контейнер нехешованим; коментар поруч).
+- **pytest: 65 тестів**, з них **5 властивостей Hypothesis** (`tests/test_properties.py`,
+  `tests/test_tokenize.py`): merge збігається з операціями над `set`; постінги завжди
+  відсортовані; `load(save(index)) == index` (pickle і JSON); обчислення випадкового дерева
+  запиту збігається з «оракулом» на множинах; токенізація ідемпотентна і не дає порожніх токенів.
+  `conftest.py` створює маленький корпус (зокрема кирилицю і файл з битим UTF-8) один раз на
+  сесію. Тест round-trip позначено `@pytest.mark.slow` (`uv run pytest -m "not slow"`).
+  CLI тестується через `typer.testing.CliRunner`.
+- **Пакет.** `pyproject.toml` (PEP 621): залежності `typer`, `rich`; група `dev`;
+  `[project.scripts] findex = "findex.cli:app"`; конфіги ruff, pyright, pytest, coverage.
+  `uv build` → `dist/findex-0.4.0-py3-none-any.whl`. Перевірено: у чистому venv
+  встановлення wheel створює команду `findex`, і `findex --version` працює.
+- **CLI** (`src/findex/cli.py`, typer + rich): `findex index` (смуга прогресу), `findex search`
+  (таблиця rich з підсвіченими сніпетами; `--json` — JSON-рядки в stdout для `| jq`),
+  `findex stats`; `-v` / `-vv` — рівень логів. Діагностика (логи, прогрес, помилки) йде в
+  **stderr**, дані — в **stdout**. Очікувані помилки (немає файлу, зламаний запит, не той формат)
+  — один рядок `error: …` і код виходу 1, без traceback.
+- **logging**: `log = logging.getLogger(__name__)` у модулях; налаштування — лише один раз у
+  `cli.py` (`RichHandler` → stderr); лінивий формат `log.info("indexed %d documents", n)`.
+- **CI**: `.github/workflows/ci.yml` — на push і PR, Python 3.12 і 3.13: `uv sync --locked`,
+  `ruff check`, `ruff format --check`, `pyright`, `pytest --cov`.
+
+```bash
+findex search index.pkl 'dataclass frozen' -k 2 --json | jq -r .title
+findex search nope.pkl x ; echo $?        # error: index file not found: nope.pkl → 1
+```
+
+### Покриття: 82 %
+
+| Модуль | Покриття | Що не покрито і чому |
+|---|---|---|
+| merge, tokenize, models, decorators | 100 % | — |
+| cli, store | 96–97 % | гілки помилок, які важко відтворити (немає прав на файл) |
+| query, scoring | 91–94 % | `__str__` вузлів для виводу, частина гілок помилок парсера |
+| corpus, snippets | 83–87 % | помилка читання файлу (`OSError`), сніпети з `.jsonl.gz` |
+| index, search | 69–76 % | навчальні `python -m findex.index/search` (`argparse`) з Лаб 2–3 — замінені CLI |
+| stats | 0 % | `python -m findex.stats` з Лаб 1 — скрипт вимірювань, логіку покривають тести індексу |
+
+Покриття — не мета саме по собі: важливі шляхи (токенізація, merge, парсер, скорери,
+збереження, CLI) покриті тестами з гострими перевірками і властивостями.
