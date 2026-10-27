@@ -164,3 +164,105 @@ set швидший у 2–8 разів. На однакових крихітни
 працює потоково), а також для фразового пошуку по позиціях. Найбільший розрив — коли один
 список значно довший (`the` vs `offline`): тут допоміг би «галопуючий» пошук (бінарний пошук
 по довгому списку) замість лінійного проходу.
+
+---
+
+## Лаб 3 — Рейтинг і модель об'єктів
+
+### Що зроблено
+
+- **`Index` — справжній Python-об'єкт** (`src/findex/index.py`): успадковує
+  `collections.abc.Mapping[str, list[Posting]]` і реалізує `__getitem__`, `__len__`, `__iter__`
+  (решта — `get`, `keys`, `items`, `__contains__` — приходить від `Mapping`; `__contains__`
+  перевизначено як швидший). Також `__repr__`, `__eq__`, властивості `num_docs` (`@property`),
+  `avg_doc_length` і `all_doc_ids` (`@cached_property` — обчислюються один раз), методи
+  `doc_length`, `df`, `idf`.
+- **`open_index(path)`** — контекстний менеджер через `@contextmanager` (`store.py`): індекс
+  звільняється в `finally`, навіть якщо тіло `with` кинуло виняток.
+- **`Scorer` — протокол** (`scoring.py`), дві незалежні реалізації без спільного предка:
+  `TfIdf` і `BM25(k1=1.5, b=0.75)`; обидві мають `__call__`.
+- **`SearchEngine.search(query, k)`** (`search.py`): дерево запиту визначає *які* документи
+  підходять, скорер — *порядок*, `heapq.nlargest(k, …)` бере top-k за O(n log k).
+  Результати — `SearchResult` з `@dataclass(order=True)`.
+- **Мова запитів** (`query.py`): рекурсивний спуск, вузли `Term`, `Phrase`, `And`, `Or`, `Not`
+  (заморожені dataclass-и → порівнюються як дерева) з перевантаженими `&`, `|`, `~`.
+  Фрази шукаються по позиціях тим самим two-pointer merge.
+- **`@timed`** (`decorators.py`, з `functools.wraps`) на `build_index`, `load`, `save`,
+  `SearchEngine.search`; **`functools.lru_cache(maxsize=256)`** на шляху «рядок запиту →
+  doc_ids»; `parse` теж кешується.
+- **Сніпети** (`snippets.py`): вікно ±80 символів навколо позиції, що покриває найбільше
+  різних термінів запиту, межі розширюються до цілих слів, терміни підсвічуються.
+
+```python
+>>> with open_index(Path("index.pkl")) as ix:
+...     print(repr(ix), len(ix), "python" in ix, ix.df("python"), round(ix.avg_doc_length, 1))
+Index(terms=42_724, docs=560, positions=True) 42724 True 460 3227.5
+>>> parse("python (async OR await) NOT java") == Term("python") & (Term("async") | Term("await")) & ~Term("java")
+True
+```
+
+```bash
+uv run python -m findex.index data/pydocs --out index.pkl --positions
+uv run python -m findex.search index.pkl 'asyncio "event loop" NOT thread' --k 5 --repeat 2 -vv
+uv run python scripts/lab03_evaluate.py data/pydocs
+```
+
+Лог із кеш-попаданням на повторному запиті (`-vv`):
+
+```
+findex.timing: load took 1116.2 ms
+findex.timing: SearchEngine.search took 1.2 ms
+__main__: cache hit for 'asyncio "event loop" NOT thread'
+findex.timing: SearchEngine.search took 0.3 ms
+```
+
+> Пастка, на яку ми натрапили: під `python -m findex.index` файл виконується як модуль
+> `__main__`, і pickle записував клас як `__main__.Index` — такий файл не завантажувався з
+> інших модулів. Виправлено: блок `if __name__ == "__main__"` імпортує справжній
+> `findex.index` і викликає його `main()`.
+
+### Три перевірки ранжування (на нашому корпусі)
+
+**1. Рідкісний термін переважає частий.** Запит `the OR zipapp`: `df(the)=552`, `df(zipapp)=8`.
+Найкращий документ із `zipapp` (`library/zipapp.rst`) — **9,97**; найкращий лише з `the` — **0,04**.
+`idf(the)=0,015` проти `idf(zipapp)=4,19`.
+
+**2. BM25 насичує tf.** Вага терміна для документа середньої довжини:
+
+| tf | вага BM25 | внесок цього входження | вага TF-IDF |
+|---|---|---|---|
+| 1 | 1,000 | +1,000 | 1,000 |
+| 2 | 1,429 | +0,429 | 1,693 |
+| 5 | 1,923 | +0,105 | 2,609 |
+| 10 | 2,174 | +0,031 | 3,303 |
+| 20 | 2,326 | **+0,009** | 3,996 |
+
+20-те повторення додає 0,009 — майже нічого; стеля BM25 = `k1 + 1 = 2,5`. TF-IDF росте без межі.
+
+**3. Короткий документ з одним збігом переважає довгий.** Термін `regenerates`, tf=1 в обох:
+`README.rst` (758 токенів) — BM25 **7,36**; `whatsnew/2.7.rst` (17 556 токенів) — BM25 **1,61**.
+TF-IDF дає обом однакові 4,94, бо не враховує довжину.
+
+### precision@5 (10 запитів, розмічених вручну)
+
+Для кожного запиту вручну визначено файли документації, які *мають* бути в топ-5
+(`scripts/lab03_evaluate.py`, словник `QRELS`). Слова запиту з'єднуються через `OR`.
+
+| Запит | TF-IDF P@5 | BM25 P@5 |
+|---|---|---|
+| asyncio event loop | 0,6 | 0,8 |
+| regular expression | 0,4 | 0,4 |
+| unicode normalization | 0,4 | 0,4 |
+| logging handler | 1,0 | 1,0 |
+| descriptor | 0,4 | 0,2 |
+| dataclass frozen | 0,2 | 0,2 |
+| garbage collection reference cycles | 0,4 | 0,4 |
+| serialize objects | 0,4 | 0,6 |
+| thread pool executor | 0,4 | 0,4 |
+| command line arguments parser | 0,6 | 0,8 |
+| **середнє** | **0,48** | **0,52** |
+
+BM25 трохи кращий (особливо там, де релевантні документи короткі й сфокусовані). Для запитів
+з 1–2 релевантними файлами (`dataclass frozen`, `regular expression`) P@5 обмежений зверху
+0,2–0,4 самою кількістю релевантних документів — вибірка маленька й шумна, але звичка
+вимірювати ранжування важливіша за саме число.

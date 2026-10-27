@@ -4,8 +4,9 @@ from pathlib import Path
 
 from findex.corpus import Document
 from findex.index import build_index
+from findex.merge import merge_and, merge_not, merge_or
 from findex.models import DocMeta, Posting
-from findex.search import boolean_search, merge_and, merge_not, merge_or
+from findex.search import boolean_search
 from findex.store import load, save
 
 DOCS = [
@@ -22,9 +23,9 @@ def test_records_are_hashable() -> None:
 
 def test_postings_sorted_and_tf() -> None:
     ix = build_index(DOCS)
-    assert [p.doc_id for p in ix.postings["the"]] == [0, 1]
-    assert ix.postings["the"][0].tf == 2
-    assert ix.doc_lengths == {0: 6, 1: 3, 2: 5}
+    assert [p.doc_id for p in ix["the"]] == [0, 1]
+    assert ix["the"][0].tf == 2
+    assert [ix.doc_length(d) for d in range(3)] == [6, 3, 5]
 
 
 def test_merges() -> None:

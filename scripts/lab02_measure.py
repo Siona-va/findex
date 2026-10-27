@@ -108,9 +108,9 @@ def main() -> None:
         print(f"| {ext} | {f.stat().st_size / 2**20:.1f} MB | {t_save:.2f} s | {t_load:.2f} s |")
 
     print("\n### merge vs set\n")
-    by_df = sorted(index.postings, key=lambda t: len(index.postings[t]))
+    by_df = sorted(index, key=index.df)
     common = by_df[-2:]
-    rare = [t for t in by_df if len(index.postings[t]) >= 3][:2]
+    rare = [t for t in by_df if index.df(t) >= 3][:2]
     print("| Terms (df) | Op | merge | set |")
     print("|---|---|---|---|")
     for pair in (common, rare, [common[-1], rare[0]]):

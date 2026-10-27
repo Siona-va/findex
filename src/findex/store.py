@@ -1,27 +1,35 @@
 """Saving and loading the index. Format is chosen by file extension.
 
-* ``.pkl`` -- pickle. Fast and compact, BUT: ``pickle.load`` can execute arbitrary
-  code embedded in the file (a pickle may tell the loader to call any importable
-  callable, e.g. ``os.system``). Loading a pickle from an untrusted source is a
-  remote-code-execution hole. We only ever load index files *we built ourselves*.
-* ``.json`` -- safe, human-readable, portable; bigger and slower. Tuples become
-  lists and int keys become strings, so we convert them back on load.
+* ``.pkl`` -- pickle. Fast and simple, BUT: ``pickle.load`` can execute arbitrary
+  code embedded in the file (a pickle may instruct the loader to call any importable
+  callable, e.g. ``os.system``, via ``__reduce__``). Loading a pickle from an untrusted
+  source is a remote-code-execution hole. We only ever load index files we built.
+* ``.json`` -- safe, human-readable, portable. Tuples become lists and int keys become
+  strings, so they are converted back on load.
 """
 
 from __future__ import annotations
 
 import json
 import pickle
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from findex.index import IndexData
+from findex.decorators import timed
+from findex.index import Index
 from findex.models import DocMeta, Posting
 
 FORMAT_VERSION = 1
 
 
-def save(index: IndexData, path: Path) -> None:
+class IndexFormatError(ValueError):
+    """The file exists but is not a findex index we can read."""
+
+
+@timed
+def save(index: Index, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix == ".json":
         _save_json(index, path)
@@ -30,40 +38,62 @@ def save(index: IndexData, path: Path) -> None:
             pickle.dump(index, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-def load(path: Path) -> IndexData:
-    if not path.exists():
+@timed
+def load(path: Path) -> Index:
+    if not path.is_file():
         raise FileNotFoundError(f"index file not found: {path}")
     if path.suffix == ".json":
         return _load_json(path)
-    with path.open("rb") as f:
-        # SECURITY: never point this at a file you did not create yourself.
-        obj = pickle.load(f)
-    if not isinstance(obj, IndexData):
-        raise ValueError(f"{path} does not contain a findex index")
+    try:
+        with path.open("rb") as f:
+            # SECURITY: never point this at a file you did not create yourself.
+            obj = pickle.load(f)
+    except (pickle.UnpicklingError, EOFError, AttributeError, ImportError) as exc:
+        raise IndexFormatError(f"{path} is not a valid findex index: {exc}") from exc
+    if not isinstance(obj, Index):
+        raise IndexFormatError(f"{path} does not contain a findex index")
     return obj
 
 
-def _save_json(index: IndexData, path: Path) -> None:
+@contextmanager
+def open_index(path: Path) -> Iterator[Index]:
+    """``with open_index(p) as ix: ...`` -- the index is released even if the body raises.
+
+    Everything before ``yield`` is ``__enter__``, everything in ``finally`` is ``__exit__``.
+    """
+    index = load(path)
+    try:
+        yield index
+    finally:
+        index.close()
+
+
+def _save_json(index: Index, path: Path) -> None:
     data: dict[str, Any] = {
         "version": FORMAT_VERSION,
         "has_positions": index.has_positions,
-        "doc_lengths": index.doc_lengths,
-        "doc_meta": {d: [m.path, m.title] for d, m in index.doc_meta.items()},
+        "doc_lengths": {d: index.doc_length(d) for d in index.all_doc_ids},
+        "doc_meta": {
+            d: [index.doc_meta(d).path, index.doc_meta(d).title] for d in index.all_doc_ids
+        },
         "postings": {
             term: [[p.doc_id, p.tf, list(p.positions)] for p in plist]
-            for term, plist in index.postings.items()
+            for term, plist in index.items()
         },
     }
     with path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
 
 
-def _load_json(path: Path) -> IndexData:
-    with path.open(encoding="utf-8") as f:
-        data = json.load(f)
-    if data.get("version") != FORMAT_VERSION:
-        raise ValueError(f"unsupported index format version in {path}")
-    return IndexData(
+def _load_json(path: Path) -> Index:
+    try:
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise IndexFormatError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict) or data.get("version") != FORMAT_VERSION:  # pyright: ignore[reportUnknownMemberType]
+        raise IndexFormatError(f"unsupported index format in {path}")
+    return Index(
         postings={
             term: [Posting(d, tf, tuple(pos)) for d, tf, pos in plist]
             for term, plist in data["postings"].items()

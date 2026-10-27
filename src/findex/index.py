@@ -1,46 +1,133 @@
-"""Building the inverted index in one streaming pass.
+"""The inverted index as a Python object, and building it in one streaming pass.
 
     python -m findex.index data/pydocs --out index.pkl [--positions] [--limit N]
 
-The corpus still streams (Lab 1 pipeline); only the index grows.
-Postings are sorted by ``doc_id`` *for free*: documents arrive in increasing
-``doc_id`` order and we append each document's postings when it ends.
+``Index`` is a read-only ``Mapping[str, list[Posting]]`` (term -> postings), so it
+behaves like a built-in: ``len(ix)``, ``"python" in ix``, ``ix["python"]``,
+``for term in ix``, ``ix.get(term, [])``, ``ix.keys()`` ... all work.
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
+import math
 import time
 import tracemalloc
 from collections import Counter, defaultdict
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Iterator, Mapping
+from functools import cached_property
 from itertools import islice
 from pathlib import Path
 
 from findex.corpus import Document, iter_documents
+from findex.decorators import timed
 from findex.models import DocMeta, Posting
 from findex.tokenize import tokenize
 
-
-@dataclass
-class IndexData:
-    """Raw index: three dictionaries (Lab 3 wraps this into a proper class)."""
-
-    postings: dict[str, list[Posting]] = field(default_factory=dict)
-    doc_lengths: dict[int, int] = field(default_factory=dict)
-    doc_meta: dict[int, DocMeta] = field(default_factory=dict)
-    has_positions: bool = False
+log = logging.getLogger(__name__)
 
 
-def build_index(docs: Iterable[Document], positions: bool = False) -> IndexData:
+class Index(Mapping[str, list[Posting]]):
+    """Term -> postings sorted by doc_id, plus per-document lengths and metadata."""
+
+    def __init__(
+        self,
+        postings: dict[str, list[Posting]],
+        doc_lengths: dict[int, int],
+        doc_meta: dict[int, DocMeta],
+        has_positions: bool = False,
+    ) -> None:
+        self._postings = postings
+        self._doc_lengths = doc_lengths
+        self._doc_meta = doc_meta
+        self.has_positions = has_positions
+
+    # --- the Mapping protocol: three abstract methods, the rest comes for free ---------
+
+    def __getitem__(self, term: str) -> list[Posting]:
+        return self._postings[term]  # KeyError if absent, as a Mapping should
+
+    def __len__(self) -> int:
+        return len(self._postings)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._postings)
+
+    def __contains__(self, term: object) -> bool:  # faster than Mapping's try/except
+        return term in self._postings
+
+    def __repr__(self) -> str:
+        return f"Index(terms={len(self):_}, docs={self.num_docs:_}, positions={self.has_positions})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Index):
+            return NotImplemented
+        return (
+            self._postings == other._postings
+            and self._doc_lengths == other._doc_lengths
+            and self._doc_meta == other._doc_meta
+            and self.has_positions == other.has_positions
+        )
+
+    __hash__ = None  # type: ignore[assignment]  # mutable container: explicitly unhashable
+
+    # --- statistics -----------------------------------------------------------------
+
+    @property
+    def num_docs(self) -> int:
+        return len(self._doc_lengths)
+
+    @cached_property
+    def avg_doc_length(self) -> float:
+        """Computed once per index (BM25 needs it for every scored document)."""
+        return sum(self._doc_lengths.values()) / self.num_docs if self.num_docs else 0.0
+
+    @cached_property
+    def all_doc_ids(self) -> list[int]:
+        return sorted(self._doc_lengths)
+
+    @cached_property
+    def total_tokens(self) -> int:
+        return sum(self._doc_lengths.values())
+
+    def doc_length(self, doc_id: int) -> int:
+        return self._doc_lengths[doc_id]
+
+    def doc_meta(self, doc_id: int) -> DocMeta:
+        return self._doc_meta[doc_id]
+
+    def df(self, term: str) -> int:
+        """Document frequency: in how many documents the term occurs."""
+        postings = self._postings.get(term)
+        return len(postings) if postings else 0
+
+    def idf(self, term: str) -> float:
+        df = self.df(term)
+        return math.log(self.num_docs / df) if df else 0.0
+
+    def collection_frequencies(self) -> Counter[str]:
+        return Counter({t: sum(p.tf for p in plist) for t, plist in self._postings.items()})
+
+    def close(self) -> None:
+        """Release the big structures (used by ``open_index``)."""
+        self._postings = {}
+        self._doc_lengths = {}
+        self._doc_meta = {}
+        self.__dict__.pop("avg_doc_length", None)
+        self.__dict__.pop("all_doc_ids", None)
+        self.__dict__.pop("total_tokens", None)
+
+
+@timed
+def build_index(docs: Iterable[Document], positions: bool = False) -> Index:
+    """One pass over a lazily streamed corpus; only the index grows."""
     postings: defaultdict[str, list[Posting]] = defaultdict(list)
     doc_lengths: dict[int, int] = {}
     doc_meta: dict[int, DocMeta] = {}
 
     for doc in docs:
         if positions:
-            # term -> list of token offsets in *this* document
             pos_map: defaultdict[str, list[int]] = defaultdict(list)
             length = 0
             for i, tok in enumerate(tokenize(doc.text)):
@@ -49,25 +136,28 @@ def build_index(docs: Iterable[Document], positions: bool = False) -> IndexData:
             for term, plist in pos_map.items():
                 postings[term].append(Posting(doc.doc_id, len(plist), tuple(plist)))
         else:
-            counts = Counter(tokenize(doc.text))  # the current document's Counter
+            counts = Counter(tokenize(doc.text))
             length = counts.total()
-            for term, tf in counts.items():  # "flush" it when the document ends
+            for term, tf in counts.items():
                 postings[term].append(Posting(doc.doc_id, tf))
         doc_lengths[doc.doc_id] = length
         doc_meta[doc.doc_id] = DocMeta(doc.doc_id, doc.path, doc.title)
 
-    return IndexData(dict(postings), doc_lengths, doc_meta, positions)
+    log.info("indexed %d documents, %d terms", len(doc_lengths), len(postings))
+    return Index(dict(postings), doc_lengths, doc_meta, positions)
 
 
 def main(argv: list[str] | None = None) -> None:
-    from findex.store import save  # local import: store depends on this module
+    from findex.store import save
 
     parser = argparse.ArgumentParser(prog="python -m findex.index")
     parser.add_argument("corpus", type=Path)
     parser.add_argument("--out", type=Path, required=True, help=".pkl (pickle) or .json")
     parser.add_argument("--positions", action="store_true", help="store token positions")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("-v", "--verbose", action="count", default=0)
     args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.WARNING - 10 * min(args.verbose, 2))
 
     docs: Iterable[Document] = iter_documents(args.corpus)
     if args.limit is not None:
@@ -84,12 +174,16 @@ def main(argv: list[str] | None = None) -> None:
     save(index, args.out)
     t_save = time.perf_counter() - t0
 
-    print(f"documents : {len(index.doc_meta):,}")
-    print(f"terms     : {len(index.postings):,}")
-    print(f"postings  : {sum(len(p) for p in index.postings.values()):,}")
+    print(repr(index))
+    print(f"postings  : {sum(len(p) for p in index.values()):,}")
     print(f"build     : {t_build:.2f} s, peak memory {peak / 2**20:.1f} MB")
     print(f"save      : {t_save:.2f} s -> {args.out} ({args.out.stat().st_size / 2**20:.1f} MB)")
 
 
 if __name__ == "__main__":
-    main()
+    # Pitfall: under `python -m findex.index` this file runs as module `__main__`, so the
+    # classes defined here would be pickled as `__main__.Index` and could not be loaded
+    # from anywhere else. Re-import the real module and run *its* main().
+    from findex.index import main as _main
+
+    _main()
