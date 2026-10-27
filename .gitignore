@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Corpus is not committed
+data/
+# Built indexes (root only -- NOT src/findex/index.py!)
+*.pkl
+/index.json
+.coverage
+.hypothesis/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
