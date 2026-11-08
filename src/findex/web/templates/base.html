@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}findex{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">find<span>ex</span></a>
+    <span class="tag">search the Python docs</span>
+    <nav><a href="/docs">API</a><a href="/stats">stats</a></nav>
+  </header>
+  <main>{% block main %}{% endblock %}</main>
+  <footer>findex — a semester project: generators → inverted index → BM25 → async crawler → FastAPI.</footer>
+</body>
+</html>

@@ -17,6 +17,7 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
@@ -44,6 +45,15 @@ def _decode(raw: bytes, path: Path) -> str:
         return raw.decode("utf-8", errors="replace")
 
 
+_RST_ROLE_RE = re.compile(r":[\w:.-]+:`[!~]?([^`<]+?)(?:\s*<[^>`]*>)?`")
+
+
+def _clean_title(title: str) -> str:
+    """``:mod:`!asyncio` --- Asynchronous I/O`` -> ``asyncio --- Asynchronous I/O``."""
+    title = _RST_ROLE_RE.sub(r"\1", title)
+    return title.replace("``", "").replace("**", "").strip()
+
+
 def _title_from_text(text: str, fallback: str) -> str:
     """First non-empty line that is not an RST/Markdown decoration."""
     for line in text.splitlines():
@@ -51,7 +61,7 @@ def _title_from_text(text: str, fallback: str) -> str:
         if stripped and not set(stripped) <= set("=-~*^`:._+"):
             if stripped.startswith(".."):  # RST directive / comment
                 continue
-            return stripped[:120]
+            return _clean_title(stripped)[:120]
     return fallback
 
 

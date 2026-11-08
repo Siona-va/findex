@@ -355,3 +355,33 @@ def crawl_cmd(
         f"(errors: {stats.errors}, log: {log_file})",
         highlight=False,
     )
+
+
+@app.command()
+def serve(
+    index_path: Annotated[
+        Path | None, typer.Option("--index", help="Index file (default: $INDEX_PATH)")
+    ] = None,
+    host: Annotated[str, typer.Option(help="Interface to bind")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535, envvar="PORT")] = 8000,
+    workers: Annotated[int, typer.Option(min=1, help="uvicorn worker processes")] = 1,
+    reload: Annotated[bool, typer.Option(help="Auto-reload on code changes (dev)")] = False,
+) -> None:
+    """Serve the search API and web UI (uvicorn + FastAPI)."""
+    import uvicorn
+
+    if index_path is not None:
+        if not index_path.is_file():
+            raise _fail(f"index file not found: {index_path}")
+        # the app reads its config from the environment (12-factor), in every worker
+        os.environ["INDEX_PATH"] = str(index_path.resolve())
+    err.print(f"serving on http://{host}:{port}  (API docs: /docs, workers: {workers})")
+    uvicorn.run(
+        "findex.web:app",
+        host=host,
+        port=port,
+        workers=workers,
+        reload=reload,
+        log_level="warning",
+        proxy_headers=True,
+    )

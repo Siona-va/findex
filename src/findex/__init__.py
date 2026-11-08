@@ -1,3 +1,3 @@
 """findex -- a full-text search engine over your own corpus."""
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"

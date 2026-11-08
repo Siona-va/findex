@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{% if q %}{{ q }} — {% endif %}findex{% endblock %}
+{% block main %}
+<form class="search" action="/" method="get" role="search">
+  <input type="search" name="q" value="{{ q }}" placeholder='e.g.  asyncio "event loop" NOT thread'
+         autofocus autocomplete="off" aria-label="Search"
+         hx-get="/fragment/results" hx-target="#results" hx-trigger="keyup changed delay:300ms"
+         hx-include="[name=scorer]" hx-push-url="false">
+  <select name="scorer" aria-label="Ranking" hx-get="/fragment/results" hx-target="#results"
+          hx-include="[name=q]">
+    <option value="bm25" {% if scorer == "bm25" %}selected{% endif %}>BM25</option>
+    <option value="tfidf" {% if scorer == "tfidf" %}selected{% endif %}>TF-IDF</option>
+  </select>
+  <button type="submit">Search</button>
+</form>
+<p class="hint">Words are ANDed. Also: <code>OR</code>, <code>NOT</code>, <code>( )</code>, <code>"exact phrase"</code>.</p>
+<section id="results">{% include "_results.html" %}</section>
+{% endblock %}

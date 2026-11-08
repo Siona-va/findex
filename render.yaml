@@ -1,0 +1,14 @@
+# Render Blueprint: New -> Blueprint -> pick this repo. Free plan, Docker runtime.
+services:
+  - type: web
+    name: findex
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_FORMAT
+        value: json

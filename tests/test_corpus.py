@@ -49,3 +49,10 @@ def test_jsonl_and_gzip(tmp_path: Path) -> None:
 def test_missing_corpus_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         next(iter_documents(tmp_path / "nope"))
+
+
+def test_titles_drop_rst_markup(tmp_path: Path) -> None:
+    (tmp_path / "a.rst").write_text(":mod:`!asyncio` --- Asynchronous I/O\n=====\n\nbody\n")
+    (tmp_path / "b.rst").write_text("``__main__`` and :term:`objects <object>`\n===\n")
+    titles = [d.title for d in iter_documents(tmp_path)]
+    assert titles == ["asyncio --- Asynchronous I/O", "__main__ and objects"]

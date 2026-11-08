@@ -1,0 +1,44 @@
+:root {
+  --bg: #fbfaf7; --fg: #1d1d1b; --muted: #6b6a66; --line: #e4e1da;
+  --accent: #2f5d8a; --mark: #ffe58a; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161615; --fg: #ecebe7; --muted: #9b9993; --line: #33322f;
+          --accent: #8db6e0; --mark: #6b5a12; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+       font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.top { display: flex; align-items: baseline; gap: 1rem; padding: 1rem 1.25rem;
+       border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brand { font-weight: 700; font-size: 1.4rem; color: var(--fg); text-decoration: none;
+         letter-spacing: -0.02em; }
+.brand span { color: var(--accent); }
+.tag { color: var(--muted); font-size: .9rem; }
+.top nav { margin-left: auto; display: flex; gap: 1rem; }
+a { color: var(--accent); }
+main { max-width: 52rem; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+.search { display: flex; gap: .5rem; }
+.search input { flex: 1; min-width: 0; font: inherit; padding: .65rem .8rem;
+                border: 1px solid var(--line); border-radius: 8px; background: transparent;
+                color: inherit; }
+.search select, .search button { font: inherit; padding: .6rem .8rem; border-radius: 8px;
+                                 border: 1px solid var(--line); background: transparent;
+                                 color: inherit; }
+.search button { background: var(--accent); color: var(--bg); border-color: var(--accent);
+                 cursor: pointer; }
+.hint, .meta, .path { color: var(--muted); font-size: .85rem; }
+.results { padding-left: 1.4rem; }
+.results li { margin: 1.1rem 0; }
+.title { font-weight: 600; font-size: 1.05rem; text-decoration: none; }
+.title:hover { text-decoration: underline; }
+.score { margin-left: .5rem; font: .75rem var(--mono); color: var(--muted); }
+.snippet { margin: .25rem 0; }
+.path { margin: 0; font-family: var(--mono); }
+mark { background: var(--mark); color: inherit; padding: 0 .1em; border-radius: 2px; }
+.pager { display: flex; gap: 1.25rem; justify-content: center; margin-top: 2rem; }
+.error { color: #b3261e; }
+.doc pre { white-space: pre-wrap; font: .9rem/1.5 var(--mono); }
+footer { color: var(--muted); font-size: .8rem; text-align: center; padding: 2rem 1rem;
+         border-top: 1px solid var(--line); }
+@media (max-width: 560px) { .search { flex-wrap: wrap; } .search input { flex-basis: 100%; } }
