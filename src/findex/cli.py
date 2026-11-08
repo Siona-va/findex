@@ -1,6 +1,7 @@
 """The ``findex`` command-line tool (typer + rich).
 
     findex index data/pydocs --out index.pkl --positions
+    findex index data/pydocs --out index.pkl --executor processes --workers 8
     findex search index.pkl 'asyncio "event loop"' --k 5
     findex search index.pkl 'asyncio' --json | jq .title
     findex stats index.pkl
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Iterable, Iterator
 from enum import StrEnum
 from itertools import islice
@@ -30,6 +32,7 @@ from rich.text import Text
 from findex import __version__
 from findex.corpus import Document, iter_documents, iter_text_files
 from findex.index import build_index
+from findex.parallel import build_parallel
 from findex.query import QuerySyntaxError, parse
 from findex.scoring import ScorerName, make_scorer
 from findex.search import SearchEngine
@@ -93,31 +96,63 @@ def _with_progress(
         progress.advance(task)
 
 
+class ExecutorChoice(StrEnum):
+    serial = "serial"
+    threads = "threads"
+    processes = "processes"
+
+
 @app.command()
 def index(
     corpus: Annotated[Path, typer.Argument(help="Directory of text files or a .jsonl file")],
     out_path: Annotated[Path, typer.Option("--out", "-o", help="Index file (.pkl or .json)")],
     positions: Annotated[bool, typer.Option(help="Store token positions (phrases)")] = False,
     limit: Annotated[int | None, typer.Option(help="Only the first N documents")] = None,
+    executor: Annotated[
+        ExecutorChoice, typer.Option(help="How to parallelize the build (Lab 5)")
+    ] = ExecutorChoice.processes,
+    workers: Annotated[
+        int, typer.Option(min=1, help="Worker threads/processes (default: CPU count)")
+    ] = os.cpu_count() or 1,
 ) -> None:
     """Build an index from a corpus and save it."""
     if not corpus.exists():
         raise _fail(f"corpus not found: {corpus}")
-    total = sum(1 for _ in iter_text_files(corpus)) if corpus.is_dir() else None
-    if total is not None and limit is not None:
-        total = min(total, limit)
-    docs: Iterable[Document] = iter_documents(corpus)
-    if limit is not None:
-        docs = islice(docs, limit)
-    with Progress(
+    progress = Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
         BarColumn(),
         MofNCompleteColumn(),
         console=err,
         transient=True,
-    ) as progress:
-        ix = build_index(_with_progress(docs, progress, total), positions=positions)
+    )
+    if limit is not None or not corpus.is_dir():
+        # streaming serial build (Lab 1-4 path): needed for --limit and for .jsonl corpora
+        total = sum(1 for _ in iter_text_files(corpus)) if corpus.is_dir() else None
+        if total is not None and limit is not None:
+            total = min(total, limit)
+        docs: Iterable[Document] = iter_documents(corpus)
+        if limit is not None:
+            docs = islice(docs, limit)
+        with progress:
+            ix = build_index(_with_progress(docs, progress, total), positions=positions)
+    else:
+        total = sum(1 for _ in iter_text_files(corpus))
+        with progress:
+            task = progress.add_task(f"indexing ({executor.value} × {workers})", total=total)
+            ix, stats = build_parallel(
+                corpus,
+                executor.value,
+                workers=workers,
+                positions=positions,
+                on_chunk_done=lambda n: progress.advance(task, n),
+            )
+        log.info(
+            "map %.2f s, merge %.2f s, %d chunks",
+            stats.map_seconds,
+            stats.merge_seconds,
+            stats.chunks,
+        )
     save(ix, out_path)
     err.print(f"[green]✓[/] {ix!r} → {out_path}", highlight=False)
 

@@ -65,16 +65,27 @@ def iter_text_files(root: Path) -> Iterator[Path]:
     yield from paths
 
 
+def read_document(path: Path, doc_id: int, root: Path) -> Document | None:
+    """Read ONE file as a Document; ``None`` (with a warning) if it cannot be read.
+
+    Used both by the streaming reader and by parallel workers (Lab 5), which receive
+    *paths* and read their own documents instead of being sent the text.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        log.warning("cannot read %s: %s", path, exc)
+        return None
+    text = _decode(raw, path)
+    rel = path.relative_to(root).as_posix()
+    return Document(doc_id, str(path), text, _title_from_text(text, rel))
+
+
 def _iter_dir(root: Path) -> Iterator[Document]:
     for doc_id, path in enumerate(iter_text_files(root)):
-        try:
-            raw = path.read_bytes()
-        except OSError as exc:
-            log.warning("cannot read %s: %s", path, exc)
-            continue
-        text = _decode(raw, path)
-        rel = path.relative_to(root).as_posix()
-        yield Document(doc_id, str(path), text, _title_from_text(text, rel))
+        doc = read_document(path, doc_id, root)
+        if doc is not None:
+            yield doc
 
 
 def _iter_jsonl(path: Path) -> Iterator[Document]:
