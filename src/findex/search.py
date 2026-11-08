@@ -93,7 +93,7 @@ class SearchEngine:
         matched_set = set(matched)
         scores: dict[int, float] = dict.fromkeys(matched, 0.0)
         acc: defaultdict[int, float] = defaultdict(float)
-        for term in set(parse(query).positive_terms()):
+        for term in sorted(set(parse(query).positive_terms())):  # fixed order: reproducible sums
             for posting in self.index.get(term, []):
                 if posting.doc_id in matched_set:
                     acc[posting.doc_id] += self.scorer.score(term, posting, self.index)

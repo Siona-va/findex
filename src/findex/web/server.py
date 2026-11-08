@@ -28,10 +28,12 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
 from findex import __version__
+from findex.fast import NumpyPostings, NumpySearchEngine
 from findex.index import Index
 from findex.query import QuerySyntaxError, parse
 from findex.scoring import BM25, Scorer, TfIdf
-from findex.search import SearchEngine, SearchResult
+from findex.search import SearchEngine
+from findex.semantic import Mode, Ranked, SemanticIndex, emb_dir, search_mode, snippet_for
 from findex.snippets import load_text
 from findex.store import IndexFormatError, load
 from findex.web.models import DocumentOut, Health, SearchHit, SearchResponse, StatsOut
@@ -81,7 +83,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     configure_logging(settings)
     app.state.started = time.monotonic()
     app.state.index = None
+    app.state.semantic = None
     app.state.engines = {}
+    app.state.np_postings = {}
     try:
         index = await asyncio.to_thread(load, settings.index_path)  # 1 s of unpickling
     except (FileNotFoundError, IndexFormatError) as exc:
@@ -89,6 +93,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     else:
         app.state.index = index
         log.info("loaded %r from %s", index, settings.index_path)
+        emb = settings.embeddings_path or emb_dir(settings.index_path)
+        if emb.is_dir():
+            app.state.semantic = await asyncio.to_thread(SemanticIndex, emb)
+            log.info("loaded embeddings (%s) from %s", app.state.semantic.meta["model"], emb)
     yield
     if app.state.index is not None:  # shutdown (SIGTERM from the platform)
         app.state.index.close()
@@ -115,11 +123,20 @@ def get_engine(
     key = (id(index), scorer)
     if key not in engines:
         impl: Scorer = BM25() if scorer == "bm25" else TfIdf()
-        engines[key] = SearchEngine(index, impl)
+        shared: dict[int, NumpyPostings] = request.app.state.np_postings
+        if id(index) not in shared:  # the NumPy arrays are shared by both scorers
+            shared[id(index)] = NumpyPostings(index)
+        engines[key] = NumpySearchEngine(index, impl, postings=shared[id(index)])
     return engines[key]
 
 
+def get_semantic(request: Request) -> SemanticIndex | None:
+    return request.app.state.semantic
+
+
 IndexDep = Annotated[Index, Depends(get_index)]
+SemanticDep = Annotated[SemanticIndex | None, Depends(get_semantic)]
+ModeParam = Literal["keyword", "semantic", "hybrid"]
 EngineDep = Annotated[SearchEngine, Depends(get_engine)]
 QueryParam = Annotated[str, Query(min_length=1, max_length=200, description="findex query")]
 KParam = Annotated[int, Query(ge=1, le=100, description="results per page")]
@@ -138,16 +155,29 @@ def _sentinel(s: str) -> str:
 
 
 def run_search(
-    engine: SearchEngine, q: str, k: int, page: int, mark: Callable[[str], str] = _bracket
-) -> tuple[list[tuple[SearchResult, str]], int, float]:
+    engine: SearchEngine,
+    q: str,
+    k: int,
+    page: int,
+    mark: Callable[[str], str] = _bracket,
+    mode: Mode = "keyword",
+    sem: SemanticIndex | None = None,
+) -> tuple[list[tuple[Ranked, str]], int, float]:
     """CPU-bound: parse, match, score, top-k, snippets. Returns (hits, total, took_ms)."""
     t0 = time.perf_counter()
     try:
-        total = len(engine.match(q))
-        ranked = engine.search(q, k=page * k)[(page - 1) * k :]
-        hits = [(r, engine.snippet(r, q, highlight=mark)) for r in ranked]
+        if mode == "keyword":
+            total = len(engine.match(q))
+            ranked = search_mode(engine, sem, q, page * k, mode)
+        else:
+            ranked = search_mode(engine, sem, q, max(page * k, 100), mode)
+            total = len(ranked)
+        ranked = ranked[(page - 1) * k : page * k]
+        hits = [(r, snippet_for(engine, sem, r, q, mark)) for r in ranked]
     except QuerySyntaxError as exc:
         raise HTTPException(status_code=400, detail=f"bad query: {exc}") from None
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc).strip("'\"")) from None
     return hits, total, (time.perf_counter() - t0) * 1000
 
 
@@ -156,13 +186,15 @@ def _response(
     scorer: str,
     k: int,
     page: int,
-    hits: list[tuple[SearchResult, str]],
+    hits: list[tuple[Ranked, str]],
     total: int,
     took: float,
+    mode: str = "keyword",
 ) -> SearchResponse:
     return SearchResponse(
         query=q,
         scorer=scorer,
+        mode=mode,
         total=total,
         page=page,
         k=k,
@@ -192,7 +224,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.index = None
+    app.state.semantic = None
     app.state.engines = {}
+    app.state.np_postings = {}
     app.state.started = time.monotonic()
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
@@ -230,15 +264,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/search", response_model=SearchResponse, tags=["api"])
     def search(
         engine: EngineDep,
+        sem: SemanticDep,
         q: QueryParam,
         k: KParam = 10,
         page: PageParam = 1,
         scorer: Literal["bm25", "tfidf"] = "bm25",
+        mode: ModeParam = "keyword",
     ) -> SearchResponse:
         """Ranked search. A plain `def`: FastAPI runs it in its thread pool, so the CPU
-        work never blocks the event loop (measured in the README)."""
-        hits, total, took = run_search(engine, q, k, page)
-        return _response(q, scorer, k, page, hits, total, took)
+        work never blocks the event loop (measured in the README).
+        `mode=semantic|hybrid` needs embeddings (`findex embed`)."""
+        hits, total, took = run_search(engine, q, k, page, mode=mode, sem=sem)
+        return _response(q, scorer, k, page, hits, total, took, mode)
 
     if settings.enable_bench_routes:
 
@@ -296,6 +333,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             index_path=str(path),
             index_bytes=path.stat().st_size if path.is_file() else 0,
             uptime_s=round(time.monotonic() - request.app.state.started, 1),
+            semantic=request.app.state.semantic.meta["model"]
+            if request.app.state.semantic
+            else None,
         )
 
     @app.get("/health", response_model=Health, tags=["ops"])
@@ -316,9 +356,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         q: str = "",
         page: PageParam = 1,
         scorer: Literal["bm25", "tfidf"] = "bm25",
+        mode: ModeParam = "keyword",
     ) -> HTMLResponse:
         return templates.TemplateResponse(
-            request, "index.html", _ui_context(request, q, page, scorer)
+            request, "index.html", _ui_context(request, q, page, scorer, mode)
         )
 
     @app.get("/fragment/results", response_class=HTMLResponse, include_in_schema=False)
@@ -327,10 +368,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         q: str = "",
         page: PageParam = 1,
         scorer: Literal["bm25", "tfidf"] = "bm25",
+        mode: ModeParam = "keyword",
     ) -> HTMLResponse:
         """htmx target: just the results block, for search-as-you-type."""
         return templates.TemplateResponse(
-            request, "_results.html", _ui_context(request, q, page, scorer)
+            request, "_results.html", _ui_context(request, q, page, scorer, mode)
         )
 
     @app.get("/doc/{doc_id}", response_class=HTMLResponse, include_in_schema=False)
@@ -344,11 +386,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             text = _mark_terms(text, terms)
         return templates.TemplateResponse(request, "doc.html", {"doc": doc, "text": text, "q": q})
 
-    def _ui_context(request: Request, q: str, page: int, scorer: str) -> dict[str, object]:
+    def _ui_context(
+        request: Request, q: str, page: int, scorer: str, mode: Mode = "keyword"
+    ) -> dict[str, object]:
+        sem: SemanticIndex | None = request.app.state.semantic
         ctx: dict[str, object] = {
             "q": q,
             "page": page,
             "scorer": scorer,
+            "mode": mode,
+            "has_semantic": sem is not None,
             "results": [],
             "total": 0,
             "took": 0.0,
@@ -365,7 +412,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return ctx
         engine = get_engine(request, index, scorer)  # type: ignore[arg-type]
         try:
-            hits, total, took = run_search(engine, q, 10, page, mark=_sentinel)
+            hits, total, took = run_search(engine, q, 10, page, _sentinel, mode, sem)
         except HTTPException as exc:
             ctx["error"] = str(exc.detail)
             return ctx

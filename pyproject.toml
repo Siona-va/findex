@@ -1,6 +1,6 @@
 [project]
 name = "findex"
-version = "0.7.0"
+version = "1.0.0"
 description = "A full-text search engine over your own corpus (Python course project)"
 readme = "README.md"
 authors = [{ name = "Valeria Soina" }]
@@ -14,7 +14,12 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.4",
     "jinja2>=3.1",
+    "numpy>=1.26",
 ]
+
+[project.optional-dependencies]
+lsa = ["scikit-learn>=1.4"]                                  # offline semantic search
+semantic = ["sentence-transformers>=3", "scikit-learn>=1.4"]  # neural embeddings (MiniLM)
 
 [dependency-groups]
 dev = [
@@ -23,6 +28,8 @@ dev = [
     "pytest-cov>=5",
     "hypothesis>=6.100",
     "pyright>=1.1.380",
+    "pytest-benchmark>=4",
+    "scikit-learn>=1.4",
 ]
 bench = ["matplotlib>=3.8"]
 

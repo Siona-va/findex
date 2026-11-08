@@ -5,9 +5,17 @@
   <input type="search" name="q" value="{{ q }}" placeholder='e.g.  asyncio "event loop" NOT thread'
          autofocus autocomplete="off" aria-label="Search"
          hx-get="/fragment/results" hx-target="#results" hx-trigger="keyup changed delay:300ms"
-         hx-include="[name=scorer]" hx-push-url="false">
+         hx-include="[name=scorer],[name=mode]" hx-push-url="false">
+  {% if has_semantic %}
+  <select name="mode" aria-label="Mode" hx-get="/fragment/results" hx-target="#results"
+          hx-include="[name=q],[name=scorer]">
+    <option value="keyword" {% if mode == "keyword" %}selected{% endif %}>Keyword</option>
+    <option value="semantic" {% if mode == "semantic" %}selected{% endif %}>Semantic</option>
+    <option value="hybrid" {% if mode == "hybrid" %}selected{% endif %}>Hybrid</option>
+  </select>
+  {% endif %}
   <select name="scorer" aria-label="Ranking" hx-get="/fragment/results" hx-target="#results"
-          hx-include="[name=q]">
+          hx-include="[name=q],[name=mode]">
     <option value="bm25" {% if scorer == "bm25" %}selected{% endif %}>BM25</option>
     <option value="tfidf" {% if scorer == "tfidf" %}selected{% endif %}>TF-IDF</option>
   </select>

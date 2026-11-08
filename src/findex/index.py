@@ -14,11 +14,13 @@ import logging
 import math
 import time
 import tracemalloc
+from array import array
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping
 from functools import cached_property
 from itertools import islice
 from pathlib import Path
+from typing import Any
 
 from findex.corpus import Document, iter_documents
 from findex.decorators import timed
@@ -72,6 +74,48 @@ class Index(Mapping[str, list[Posting]]):
 
     __hash__ = None  # type: ignore[assignment]  # mutable container: explicitly unhashable
 
+    def flat_postings(self) -> tuple[tuple[str, ...], array[int], array[int], array[int]]:
+        """All postings as flat buffers: term ``terms[i]`` owns ``offsets[i]:offsets[i+1]``.
+
+        Used for compact pickling and by the NumPy scorer (``np.frombuffer`` views).
+        """
+        terms = tuple(self._postings)
+        offsets, ids, tfs = array("I", [0]), array("I"), array("I")
+        for term in terms:
+            for p in self._postings[term]:
+                ids.append(p.doc_id)
+                tfs.append(p.tf)
+            offsets.append(len(ids))
+        return terms, offsets, ids, tfs
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        """Pickle as flat ``array('I')`` buffers instead of 332k ``Posting`` objects.
+
+        Profiling (Lab 8) showed loading spent 1.3 of 1.5 s in ``dataclasses``'
+        per-object ``__setstate__``. Arrays unpickle as one memcpy; ``_rebuild_index``
+        then creates the postings in one tight loop. Same object back, ~4x faster.
+        """
+        terms, offsets, ids, tfs = self.flat_postings()
+        pos_off, pos = array("I", [0]), array("I")
+        if self.has_positions:
+            for term in terms:
+                for p in self._postings[term]:
+                    pos.extend(p.positions)
+                    pos_off.append(len(pos))
+        meta = tuple((m.doc_id, m.path, m.title) for m in self._doc_meta.values())
+        state = (
+            terms,
+            offsets,
+            ids,
+            tfs,
+            pos_off,
+            pos,
+            self._doc_lengths,
+            meta,
+            self.has_positions,
+        )
+        return (_rebuild_index, state)
+
     # --- statistics -----------------------------------------------------------------
 
     @property
@@ -117,6 +161,32 @@ class Index(Mapping[str, list[Posting]]):
         self.__dict__.pop("avg_doc_length", None)
         self.__dict__.pop("all_doc_ids", None)
         self.__dict__.pop("total_tokens", None)
+
+
+def _rebuild_index(
+    terms: tuple[str, ...],
+    offsets: array[int],
+    ids: array[int],
+    tfs: array[int],
+    pos_off: array[int],
+    pos: array[int],
+    doc_lengths: dict[int, int],
+    meta: tuple[tuple[int, str, str], ...],
+    has_positions: bool,
+) -> Index:
+    """Inverse of ``Index.__reduce__`` (module level, so pickle can find it)."""
+    postings: dict[str, list[Posting]] = {}
+    for i, term in enumerate(terms):
+        lo, hi = offsets[i], offsets[i + 1]
+        if has_positions:
+            postings[term] = [
+                Posting(ids[j], tfs[j], tuple(pos[pos_off[j] : pos_off[j + 1]]))
+                for j in range(lo, hi)
+            ]
+        else:
+            postings[term] = [Posting(d, f) for d, f in zip(ids[lo:hi], tfs[lo:hi], strict=True)]
+    doc_meta = {d: DocMeta(d, p, t) for d, p, t in meta}
+    return Index(postings, doc_lengths, doc_meta, has_positions)
 
 
 @timed

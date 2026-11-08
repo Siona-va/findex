@@ -20,3 +20,6 @@ data/
 .ruff_cache/
 htmlcov/
 crawl.log
+*.emb/
+benchmark.json
+.benchmarks/

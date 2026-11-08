@@ -1,12 +1,12 @@
 {% if error %}
   <p class="error">{{ error }}</p>
 {% elif q %}
-  <p class="meta">{{ total }} result{{ "" if total == 1 else "s" }} · {{ "%.1f"|format(took) }} ms · {{ scorer|upper }}</p>
+  <p class="meta">{{ total }} result{{ "" if total == 1 else "s" }} · {{ "%.1f"|format(took) }} ms · {{ scorer|upper if mode == "keyword" else mode }}</p>
   <ol class="results" start="{{ (page - 1) * k + 1 }}">
   {% for r, snip in results %}
     <li>
       <a class="title" href="/doc/{{ r.doc_id }}?q={{ q|urlencode }}">{{ r.title }}</a>
-      <span class="score">{{ "%.2f"|format(r.score) }}</span>
+      <span class="score">{{ "%.3f"|format(r.score) }}</span>
       <p class="snippet">{{ snip|hl }}</p>
       <p class="path">{{ r.path }}</p>
     </li>
@@ -14,9 +14,9 @@
   </ol>
   {% if pages > 1 %}
   <nav class="pager">
-    {% if page > 1 %}<a href="/?q={{ q|urlencode }}&scorer={{ scorer }}&page={{ page - 1 }}">← previous</a>{% endif %}
+    {% if page > 1 %}<a href="/?q={{ q|urlencode }}&scorer={{ scorer }}&mode={{ mode }}&page={{ page - 1 }}">← previous</a>{% endif %}
     <span>page {{ page }} of {{ pages }}</span>
-    {% if page < pages %}<a href="/?q={{ q|urlencode }}&scorer={{ scorer }}&page={{ page + 1 }}">next →</a>{% endif %}
+    {% if page < pages %}<a href="/?q={{ q|urlencode }}&scorer={{ scorer }}&mode={{ mode }}&page={{ page + 1 }}">next →</a>{% endif %}
   </nav>
   {% endif %}
 {% endif %}

@@ -26,3 +26,9 @@ jobs:
         run: uv run pyright
       - name: Tests
         run: uv run pytest --cov=findex --cov-report=term-missing
+      - name: Benchmarks (pytest-benchmark)
+        run: uv run pytest tests/test_benchmarks.py --benchmark-only --benchmark-json=benchmark.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ matrix.python-version }}
+          path: benchmark.json

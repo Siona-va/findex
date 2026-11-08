@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import pickle
 from collections.abc import Generator
@@ -34,6 +35,24 @@ class IndexJson(TypedDict):
     postings: dict[str, list[tuple[int, int, list[int]]]]
 
 
+@contextmanager
+def gc_paused() -> Generator[None]:
+    """Pause the cyclic garbage collector while we allocate ~1M acyclic objects.
+
+    Every 700 allocations CPython may run a GC pass that walks live container objects;
+    building 332k postings triggers hundreds of passes over an ever-growing heap.
+    Postings hold no reference cycles, so nothing is leaked. Measured in Lab 8:
+    index load 0.92 s -> 0.18 s with a large live heap.
+    """
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
 class IndexFormatError(ValueError):
     """The file exists but is not a findex index we can read."""
 
@@ -55,7 +74,7 @@ def load(path: Path) -> Index:
     if path.suffix == ".json":
         return _load_json(path)
     try:
-        with path.open("rb") as f:
+        with path.open("rb") as f, gc_paused():
             # SECURITY: never point this at a file you did not create yourself.
             obj = pickle.load(f)
     except (pickle.UnpicklingError, EOFError, AttributeError, ImportError) as exc:

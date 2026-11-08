@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     index_path: Path = Field(default=Path("index.pkl"), description="Index file to serve")
+    embeddings_path: Path | None = Field(
+        default=None, description="`findex embed` output (default: <INDEX_PATH>.emb if present)"
+    )
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["text", "json"] = "text"
     port: int = Field(default=8000, ge=1, le=65535)

@@ -80,3 +80,38 @@ def test_query_evaluation_matches_set_semantics(texts: list[str], tree: Node) ->
                 raise AssertionError(node)
 
     assert tree.evaluate(ix) == sorted(oracle(tree))
+
+
+@given(st.text())
+def test_fast_tokenize_equals_span_tokenizer(text: str) -> None:
+    """Lab 8: the findall-based tokenizer is a pure speedup -- same tokens."""
+    from findex.tokenize import iter_token_spans, tokenize
+
+    assert list(tokenize(text)) == [t for t, _, _ in iter_token_spans(text)]
+
+
+hits_strategy = st.lists(
+    st.tuples(st.sampled_from(["a", "b", "c", "d"]), st.integers(0, 2000)),
+    min_size=1,
+    max_size=60,
+).map(lambda xs: sorted(((t, s, s + 1) for t, s in xs), key=lambda h: h[1]))
+
+
+@given(hits_strategy, st.integers(1, 300))
+def test_sliding_window_equals_quadratic(hits: list[tuple[str, int, int]], width: int) -> None:
+    """Lab 8: the O(h) window picks exactly the hit the O(h²) version picked."""
+    from findex.snippets import _best_window  # pyright: ignore[reportPrivateUsage]
+
+    def coverage(i: int) -> int:
+        center = hits[i][1]
+        return len({t for t, s, _ in hits if abs(s - center) <= width})
+
+    assert _best_window(hits, width) == max(range(len(hits)), key=coverage)
+
+
+@given(docs_strategy, st.booleans())
+def test_compact_pickle_round_trip(texts: list[str], positions: bool) -> None:
+    import pickle
+
+    ix = build_index((Document(i, str(i), t) for i, t in enumerate(texts)), positions=positions)
+    assert pickle.loads(pickle.dumps(ix)) == ix

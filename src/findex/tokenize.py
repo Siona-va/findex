@@ -46,6 +46,13 @@ def iter_token_spans(text: str) -> Iterator[tuple[str, int, int]]:
 
 
 def tokenize(text: str) -> Iterator[str]:
-    """Yield normalized tokens of ``text`` lazily (a generator, never a list)."""
-    for token, _start, _end in iter_token_spans(text):
-        yield token
+    """Yield normalized tokens of ``text`` (a generator).
+
+    Same tokens as ``iter_token_spans``, but without building a Match object and a
+    3-tuple per token: ``findall`` collects one *document's* words in C, then we
+    casefold them. Memory stays bounded by the largest document, not the corpus.
+    (Lab 8: 1.04 s -> see README for the measured gain on 1.8M tokens.)
+    """
+    for word in WORD_RE.findall(normalize(text)):
+        if "_" not in word or word.strip("_"):
+            yield word.casefold()

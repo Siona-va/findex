@@ -32,6 +32,31 @@ def load_text(meta: DocMeta) -> str:
     return p.read_text(encoding="utf-8", errors="replace")
 
 
+def _best_window(hits: list[tuple[str, int, int]], width: int) -> int:
+    """Index of the hit whose ±width window holds the most DISTINCT query terms.
+
+    Sliding window, O(h): both window edges only move forward as the center advances.
+    (Lab 3's version re-scanned every hit for every center -- O(h²): 1.3 s for 10
+    snippets of ``the OR a OR of``, found with the profiler in Lab 8.)
+    """
+    counts: dict[str, int] = {}
+    lo = hi = 0  # window = hits[lo:hi]
+    best, best_cov = 0, -1
+    for i, (_tok, center, _end) in enumerate(hits):
+        while hi < len(hits) and hits[hi][1] <= center + width:
+            counts[hits[hi][0]] = counts.get(hits[hi][0], 0) + 1
+            hi += 1
+        while hits[lo][1] < center - width:
+            t = hits[lo][0]
+            counts[t] -= 1
+            if not counts[t]:
+                del counts[t]
+            lo += 1
+        if len(counts) > best_cov:  # strict: the first best wins on ties
+            best, best_cov = i, len(counts)
+    return best
+
+
 def make_snippet(
     text: str,
     terms: Collection[str],
@@ -47,12 +72,7 @@ def make_snippet(
     if not hits:
         return " ".join(text[: 2 * width].split()) + ("…" if len(text) > 2 * width else "")
 
-    def coverage(i: int) -> int:
-        center = hits[i][1]
-        return len({t for t, s, _ in hits if abs(s - center) <= width})
-
-    best = max(range(len(hits)), key=coverage)  # first best wins on ties
-    center = hits[best][1]
+    center = hits[_best_window(hits, width)][1]
     lo, hi = max(0, center - width), min(len(text), center + width)
     # widen to word boundaries so we never cut a word in half
     while lo > 0 and not text[lo - 1].isspace():

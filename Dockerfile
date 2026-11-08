@@ -10,20 +10,22 @@ WORKDIR /app
 # 1) dependencies only -> this layer is cached until pyproject.toml/uv.lock change
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-install-project --no-dev
+    uv sync --locked --no-install-project --no-dev --extra lsa
 
 # 2) the project itself
 COPY README.md ./
 COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --no-editable
+    uv sync --locked --no-dev --no-editable --extra lsa
 
-# 3) the corpus + the index, baked into the image (fine for a portfolio demo)
+# 3) the corpus, the index and LSA embeddings, baked into the image (a portfolio demo;
+#    MiniLM would add torch, ~2 GB, too much for a free 512 MB instance)
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/get_corpus.sh scripts/
 RUN bash scripts/get_corpus.sh \
-    && /app/.venv/bin/findex index data/pydocs --out /app/index.pkl --positions --executor serial
+    && /app/.venv/bin/findex index data/pydocs --out /app/index.pkl --positions --executor serial \
+    && /app/.venv/bin/findex embed /app/index.pkl --model lsa
 
 # ---------- runtime ----------
 FROM python:3.13-slim-bookworm
@@ -32,6 +34,7 @@ WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --from=builder --chown=app:app /app/data /app/data
 COPY --from=builder --chown=app:app /app/index.pkl /app/index.pkl
+COPY --from=builder --chown=app:app /app/index.pkl.emb /app/index.pkl.emb
 USER app
 ENV PATH="/app/.venv/bin:$PATH" \
     INDEX_PATH=/app/index.pkl \

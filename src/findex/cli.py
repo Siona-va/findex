@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from itertools import islice
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from rich.console import Console
@@ -37,17 +37,18 @@ from rich.text import Text
 
 from findex import __version__
 from findex.corpus import Document, iter_documents, iter_text_files
-from findex.crawler import USER_AGENT, CrawlStats, FetchResult
-from findex.crawler import crawl as crawl_pages
 from findex.index import build_index
 from findex.parallel import build_parallel
 from findex.query import QuerySyntaxError, parse
 from findex.scoring import ScorerName, make_scorer
-from findex.search import SearchEngine
 from findex.snippets import Highlighter
 from findex.store import IndexFormatError, open_index, save
 
+if TYPE_CHECKING:  # the crawler pulls in httpx + asyncio (~40 ms): import it only to crawl
+    from findex.crawler import CrawlStats, FetchResult
+
 log = logging.getLogger(__name__)
+USER_AGENT_HELP = "Identify yourself honestly (default: findex-crawler/<version> + repo URL)"
 
 app = typer.Typer(
     help="findex -- full-text search over your own corpus.",
@@ -181,25 +182,41 @@ def _snippet_text(snippet: str) -> Text:
     return text
 
 
+class ModeChoice(StrEnum):
+    keyword = "keyword"
+    semantic = "semantic"
+    hybrid = "hybrid"
+
+
 @app.command()
 def search(
     index_path: Annotated[Path, typer.Argument(metavar="INDEX", help="Index file")],
     query: Annotated[str, typer.Argument(help='e.g. python (async OR await) "event loop"')],
     k: Annotated[int, typer.Option("--k", "-k", min=1, help="Number of results")] = 10,
     scorer: Annotated[ScorerChoice, typer.Option(help="Ranking function")] = ScorerChoice.bm25,
+    mode: Annotated[
+        ModeChoice, typer.Option(help="keyword | semantic | hybrid (needs `findex embed`)")
+    ] = ModeChoice.keyword,
     as_json: Annotated[bool, typer.Option("--json", help="JSON lines on stdout")] = False,
 ) -> None:
     """Ranked search with highlighted snippets."""
+    from findex.fast import NumpySearchEngine
+    from findex.semantic import SemanticIndex, emb_dir, search_mode, snippet_for
+
     scorer_name: ScorerName = "bm25" if scorer is ScorerChoice.bm25 else "tfidf"
     try:
-        parse(query)
+        if mode is ModeChoice.keyword:
+            parse(query)  # fail fast on a bad query, before loading anything
         with open_index(index_path) as ix:
-            engine = SearchEngine(ix, make_scorer(scorer_name))
-            results = engine.search(query, k=k)
+            # embeddings (and scikit-learn / torch) only when the mode needs them
+            needs_sem = mode is not ModeChoice.keyword and emb_dir(index_path).is_dir()
+            sem = SemanticIndex(emb_dir(index_path)) if needs_sem else None
+            engine = NumpySearchEngine(ix, make_scorer(scorer_name))
+            results = search_mode(engine, sem, query, k=k, mode=mode.value)
             mark: Highlighter = _sentinels if not as_json else _plain
-            snippets = [engine.snippet(r, query, highlight=mark) for r in results]
-    except (FileNotFoundError, IndexFormatError, QuerySyntaxError) as exc:
-        raise _fail(str(exc)) from None
+            snippets = [snippet_for(engine, sem, r, query, mark) for r in results]
+    except (FileNotFoundError, IndexFormatError, QuerySyntaxError, LookupError) as exc:
+        raise _fail(str(exc).strip("'\"")) from None
 
     if as_json:
         for rank, (r, snip) in enumerate(zip(results, snippets, strict=True), start=1):
@@ -216,7 +233,8 @@ def search(
     if not results:
         err.print("no documents match")
         return
-    table = Table(title=f"{query}  ·  {scorer_name}", show_lines=True)
+    label = scorer_name if mode is ModeChoice.keyword else mode.value
+    table = Table(title=f"{query}  ·  {label}", show_lines=True)
     table.add_column("#", justify="right")
     table.add_column("score", justify="right")
     table.add_column("document", overflow="fold", max_width=40)
@@ -224,8 +242,44 @@ def search(
     for rank, (r, snip) in enumerate(zip(results, snippets, strict=True), start=1):
         doc = Text(r.title, style="bold")
         doc.append(f"\n{r.path}", style="dim")
-        table.add_row(str(rank), f"{r.score:.2f}", doc, _snippet_text(snip))
+        table.add_row(str(rank), f"{r.score:.3f}", doc, _snippet_text(snip))
     out.print(table)
+
+
+@app.command()
+def embed(
+    index_path: Annotated[Path, typer.Argument(metavar="INDEX", help="Index file")],
+    model: Annotated[
+        str, typer.Option(help="sentence-transformers model, or `lsa` (offline, TF-IDF+SVD)")
+    ] = "all-MiniLM-L6-v2",
+    chunk_words: Annotated[int, typer.Option(min=20, help="Words per chunk")] = 200,
+) -> None:
+    """Chunk every document and embed it, for --mode semantic / hybrid (Lab 8)."""
+    from findex.semantic import build_embeddings, emb_dir
+
+    try:
+        with (
+            open_index(index_path) as ix,
+            Progress(
+                SpinnerColumn(),
+                TextColumn("{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                console=err,
+                transient=True,
+            ) as progress,
+        ):
+            task = progress.add_task(f"embedding ({model})", total=None)
+
+            def tick(done: int, total: int) -> None:
+                progress.update(task, completed=done, total=total)
+
+            n = build_embeddings(ix, emb_dir(index_path), model, chunk_words, on_progress=tick)
+    except (FileNotFoundError, IndexFormatError) as exc:
+        raise _fail(str(exc)) from None
+    except ModuleNotFoundError as exc:
+        raise _fail(f"{exc.name} is not installed: pip install 'findex[semantic]'") from None
+    err.print(f"[green]✓[/] {n} chunks embedded → {emb_dir(index_path)}", highlight=False)
 
 
 @app.command()
@@ -276,6 +330,8 @@ async def _run_crawl(
     live: Live | None,
     **options: Any,
 ) -> None:
+    from findex.crawler import crawl as crawl_pages
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with (
         out_path.open("w", encoding="utf-8") as out_f,
@@ -314,11 +370,13 @@ def crawl_cmd(
         list[str] | None, typer.Option(help="Allowed domain (repeatable; default: seeds')")
     ] = None,
     log_file: Annotated[Path, typer.Option(help="Per-URL log")] = Path("crawl.log"),
-    user_agent: Annotated[str, typer.Option(help="Identify yourself honestly")] = USER_AGENT,
+    user_agent: Annotated[str | None, typer.Option(help=USER_AGENT_HELP)] = None,
     debug: Annotated[bool, typer.Option(help="asyncio debug mode (slow callbacks)")] = False,
     stats_json: Annotated[Path | None, typer.Option(hidden=True)] = None,
 ) -> None:
     """Crawl politely (robots.txt, per-host limits) and write pages as JSON lines."""
+    from findex.crawler import USER_AGENT, CrawlStats
+
     stats = CrawlStats()
     options: dict[str, Any] = {
         "max_pages": max_pages,
@@ -327,7 +385,7 @@ def crawl_cmd(
         "min_delay": min_delay,
         "timeout": timeout,
         "allowed_domains": allow_domain,
-        "user_agent": user_agent,
+        "user_agent": user_agent or USER_AGENT,
     }
     t0 = time.perf_counter()
     try:

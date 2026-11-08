@@ -15,7 +15,8 @@ class SearchHit(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     scorer: str
-    total: int = Field(description="All documents matching the query")
+    mode: str = "keyword"
+    total: int = Field(description="Matching documents (semantic/hybrid: the candidates)")
     page: int
     k: int
     took_ms: float
@@ -32,6 +33,7 @@ class DocumentOut(BaseModel):
 
 class StatsOut(BaseModel):
     version: str
+    semantic: str | None = Field(default=None, description="Embedding model, if loaded")
     documents: int
     terms: int
     tokens: int
