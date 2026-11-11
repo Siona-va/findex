@@ -1,11 +1,12 @@
 name: Releases
 
-# For every v* tag that has no GitHub Release yet: build the wheel from that tag
-# and publish a release with the wheel attached (v0.4.0, v0.7.0, v1.0.0, ...).
+# For every v* tag: make sure a GitHub Release exists AND has the wheel built from that
+# tag attached. Releases created by hand without files get their wheel added here.
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -19,17 +20,23 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v6
-      - name: Release every v* tag that has no release yet
+      - name: Build and attach a wheel for every v* tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          git fetch --tags --force
           for tag in $(git tag -l 'v*' --sort=version:refname); do
-            if gh release view "$tag" >/dev/null 2>&1; then
-              echo "$tag: already released"; continue
+            if gh release view "$tag" --json assets -q '.assets[].name' 2>/dev/null | grep -q '\.whl$'; then
+              echo "$tag: wheel already attached"; continue
             fi
             git checkout -q "$tag"
             rm -rf dist && uv build --wheel
-            gh release create "$tag" dist/*.whl --verify-tag --title "findex ${tag#v}" \
-              --notes "Install: \`uv tool install <wheel URL>\` or \`pip install <wheel>\`, then \`findex --help\`."
-            echo "$tag: released"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release upload "$tag" dist/*.whl
+              echo "$tag: wheel attached to the existing release"
+            else
+              gh release create "$tag" dist/*.whl --verify-tag --title "findex ${tag#v}" \
+                --notes "Install: \`uv tool install <wheel URL>\`, then \`findex --help\`."
+              echo "$tag: release created"
+            fi
           done
