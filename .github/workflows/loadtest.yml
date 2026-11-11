@@ -1,0 +1,46 @@
+name: Load test (deployed)
+
+# Lab 7: oha against the live Render service. Run by hand from the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Deployed base URL
+        default: https://findex-3yqe.onrender.com
+  push:
+    branches: [main]
+    paths: [.github/workflows/loadtest.yml]
+
+jobs:
+  oha:
+    runs-on: ubuntu-latest
+    env:
+      URL: ${{ inputs.url || 'https://findex-3yqe.onrender.com' }}
+      Q: q=python%20async%20await&k=10
+    steps:
+      - name: Install oha
+        run: |
+          curl -fsSL -o oha https://github.com/hatoo/oha/releases/latest/download/oha-linux-amd64
+          chmod +x oha && ./oha --version
+      - name: Wake the free instance up
+        run: |
+          for i in $(seq 30); do curl -fs -m 20 "$URL/health" && break; sleep 5; done
+          echo; for i in $(seq 20); do curl -fs -o /dev/null "$URL/search?$Q"; done
+          curl -fs "$URL/search?q=asyncio+task+group&k=3" | head -c 400; echo
+          curl -fs "$URL/" | grep -qi "<html" && echo "UI ok"
+      - name: oha, 15 s, 20 clients (+1 client polling /health)
+        run: |
+          ./oha -z 15s -c 1 -q 10 --no-tui --output-format json "$URL/health" > health.json &
+          ./oha -z 15s -c 20 --no-tui --output-format json "$URL/search?$Q" > search.json
+          wait
+          row=$(python3 - <<'PY'
+          import json
+          d = json.load(open("search.json")); h = json.load(open("health.json"))["latencyPercentiles"]
+          s, p = d["summary"], d["latencyPercentiles"]
+          print(f"| deployed | /search | 20 | {s['requestsPerSec']:.0f} | {p['p50']*1000:.0f} | "
+                f"{p['p95']*1000:.0f} | {p['p99']*1000:.0f} | {h['p50']*1000:.0f} / {h['p99']*1000:.0f} | "
+                f"ok={s['successRate']:.3f}")
+          PY
+          )
+          echo "$row" >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=oha::$row"
