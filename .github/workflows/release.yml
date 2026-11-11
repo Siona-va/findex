@@ -2,11 +2,11 @@ name: Releases
 
 # For every v* tag: make sure a GitHub Release exists AND has the wheel built from that
 # tag attached. Releases created by hand without files get their wheel added here.
+# (No `release: published` trigger: GitHub would read this file from the TAGGED commit,
+#  and the lab commits predate it. Runs on pushes to main or by hand from the Actions tab.)
 on:
   push:
     branches: [main]
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
