@@ -1,0 +1,35 @@
+name: Releases
+
+# For every v* tag that has no GitHub Release yet: build the wheel from that tag
+# and publish a release with the wheel attached (v0.4.0, v0.7.0, v1.0.0, ...).
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Release every v* tag that has no release yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for tag in $(git tag -l 'v*' --sort=version:refname); do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "$tag: already released"; continue
+            fi
+            git checkout -q "$tag"
+            rm -rf dist && uv build --wheel
+            gh release create "$tag" dist/*.whl --verify-tag --title "findex ${tag#v}" \
+              --notes "Install: \`uv tool install <wheel URL>\` or \`pip install <wheel>\`, then \`findex --help\`."
+            echo "$tag: released"
+          done

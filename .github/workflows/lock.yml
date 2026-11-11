@@ -1,0 +1,25 @@
+name: Lock dependencies
+
+# Creates/updates uv.lock whenever pyproject.toml changes on main, and commits it.
+on:
+  push:
+    branches: [main]
+    paths: [pyproject.toml, .github/workflows/lock.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv lock
+      - name: Commit uv.lock if it changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add uv.lock
+          git diff --cached --quiet || { git commit -m "Update uv.lock" && git push; }

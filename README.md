@@ -1,6 +1,6 @@
 # findex — пошукова система по документації Python, зібрана з нуля
 
-[![CI](https://github.com/USERNAME/findex/actions/workflows/ci.yml/badge.svg)](https://github.com/USERNAME/findex/actions/workflows/ci.yml)
+[![CI](https://github.com/Siona-va/findex/actions/workflows/ci.yml/badge.svg)](https://github.com/Siona-va/findex/actions/workflows/ci.yml)
 
 **findex** — повнотекстовий і семантичний пошук по 560 сторінках документації Python:
 інвертований індекс, BM25, мова запитів з фразами, асинхронний краулер, веб-API і UI —
@@ -544,7 +544,7 @@ free-threaded збірка вимикає спеціалізуючий інте�
 - **`findex crawl <seed> --max-pages 500 --concurrency 10 --per-host 2 --out data/crawl.jsonl`**
   — по одному JSON-рядку на сторінку *одразу* при надходженні; жива панель `rich`
   (сторінки, сторінок/с, у польоті, черга, помилки); `crawl.log` з рядком на кожну URL.
-  Чесний `User-Agent`: `findex-crawler/0.6.0 (student search-engine project; +https://github.com/USERNAME/findex)`.
+  Чесний `User-Agent`: `findex-crawler/0.6.0 (student search-engine project; +https://github.com/Siona-va/findex)`.
 - **Індексація — поза циклом подій:** `findex index data/crawl.jsonl --out crawl.pkl`
   читає вивід краулера тим самим `iter_documents` з Лаб 1.
 - Тести на `httpx.MockTransport` (жодної мережі): повтори, `Retry-After`, 404 без повтору,

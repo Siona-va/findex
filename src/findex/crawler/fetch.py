@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 USER_AGENT = (
     f"findex-crawler/{__version__} (student search-engine project; "
-    "+https://github.com/USERNAME/findex)"
+    "+https://github.com/Siona-va/findex)"
 )
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 
